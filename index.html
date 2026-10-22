@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Барахолка класса</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; background: #f5f5f5; }
+  h1 { font-size: 22px; }
+  form { background: #fff; padding: 16px; border-radius: 12px; margin-bottom: 24px; }
+  input, textarea, button { width: 100%; box-sizing: border-box; margin-bottom: 10px; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; }
+  button { background: #2563eb; color: #fff; border: none; cursor: pointer; }
+  button:disabled { background: #999; }
+  .card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 12px; display: flex; gap: 12px; }
+  .card img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+  .card .info { flex: 1; }
+  .card .price { font-weight: bold; color: #16a34a; }
+  #status { font-size: 14px; color: #555; margin-bottom: 10px; }
+  .error { color: #dc2626; }
+</style>
+</head>
+<body>
+
+<h1>Барахолка класса</h1>
+<div id="status"></div>
+
+<form id="form">
+  <input type="text" id="title" placeholder="Название товара" required>
+  <input type="number" id="price" placeholder="Цена (₽), 0 = отдам даром" min="0" value="0">
+  <textarea id="description" placeholder="Описание" rows="3"></textarea>
+  <input type="file" id="photo" accept="image/*" required>
+  <button type="submit" id="submitBtn">Добавить товар</button>
+</form>
+
+<div id="list"></div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// ⚠️ ЗАМЕНИТЕ на свой Project URL, если отличается
+const SUPABASE_URL = 'https://cjoycyganukagvcfsimt.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_WEWsxP_r4e9twQDk8vqhfw_L-pIV0cy';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const statusEl = document.getElementById('status');
+const listEl = document.getElementById('list');
+const form = document.getElementById('form');
+const submitBtn = document.getElementById('submitBtn');
+
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'error' : '';
+}
+
+// Сжатие фото в браузере
+async function compressImage(file, maxSize = 800, quality = 0.7) {
+  const bitmap = await createImageBitmap(file);
+  let { width, height } = bitmap;
+  if (width > maxSize || height > maxSize) {
+    if (width > height) { height = Math.round(height * maxSize / width); width = maxSize; }
+    else { width = Math.round(width * maxSize / height); height = maxSize; }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+}
+
+// Загрузка товаров
+async function loadProducts() {
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) { setStatus('Ошибка загрузки: ' + error.message, true); return; }
+  listEl.innerHTML = '';
+  if (!data.length) { listEl.innerHTML = '<p>Пока пусто. Добавьте первый товар!</p>'; return; }
+  for (const p of data) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <img src="${p.image_url || ''}" alt="">
+      <div class="info">
+        <div><b>${escapeHtml(p.title)}</b></div>
+        <div class="price">${p.price > 0 ? p.price + ' ₽' : 'Даром'}</div>
+        <div>${escapeHtml(p.description || '')}</div>
+      </div>`;
+    listEl.appendChild(card);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  submitBtn.disabled = true;
+  try {
+    const file = document.getElementById('photo').files[0];
+    setStatus('Сжимаю фото...');
+    const blob = await compressImage(file);
+    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+
+    setStatus('Загружаю фото...');
+    const { error: upErr } = await supabase.storage
+      .from('photos')
+      .upload(fileName, blob, { contentType: 'image/jpeg' });
+    if (upErr) throw upErr;
+
+    const { data: urlData } = supabase.storage.from('photos').getPublicUrl(fileName);
+
+    setStatus('Сохраняю товар...');
+    const { error: dbErr } = await supabase.from('products').insert({
+      title: document.getElementById('title').value.trim(),
+      price: parseInt(document.getElementById('price').value) || 0,
+      description: document.getElementById('description').value.trim(),
+      image_url: urlData.publicUrl
+    });
+    if (dbErr) throw dbErr;
+
+    form.reset();
+    setStatus('Готово! Товар добавлен.');
+    loadProducts();
+  } catch (err) {
+    setStatus('Ошибка: ' + err.message, true);
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+loadProducts();
+</script>
+</body>
+</html>
